@@ -28,6 +28,8 @@ import warnings
 import logging
 import datetime
 
+from google.appengine.api import urlfetch
+
 try:
     import xml.etree.cElementTree as ElementTree
 except ImportError:
@@ -37,9 +39,6 @@ try:
     import gzip
 except ImportError:
     gzip = None
-
-
-from cache import CacheHandler
 
 from tvdb_ui import BaseUI, ConsoleUI
 from tvdb_exceptions import (tvdb_error, tvdb_userabort, tvdb_shownotfound,
@@ -269,7 +268,6 @@ class Tvdb:
                 interactive = False,
                 select_first = False,
                 debug = False,
-                cache = True,
                 banners = False,
                 actors = False,
                 custom_ui = None,
@@ -291,11 +289,6 @@ class Tvdb:
 
                  >>> import logging
                  >>> logging.basicConfig(level = logging.DEBUG)
-
-        cache (True/False/str/unicode):
-            Retrieved XML are persisted to to disc. If true, stores in tvdb_api
-            folder under your systems TEMP_DIR, if set to str/unicode instance it
-            will use this as the cache location. If False, disables caching.
 
         banners (True/False):
             Retrieves the banners for a show. These are accessed
@@ -358,31 +351,10 @@ class Tvdb:
             self.config['apikey'] = "0629B785CE550C8D" # tvdb_api's API key
 
         self.config['debug_enabled'] = debug # show debugging messages
-
         self.config['custom_ui'] = custom_ui
-
         self.config['interactive'] = interactive # prompt for correct series?
-
         self.config['select_first'] = select_first
-
         self.config['search_all_languages'] = search_all_languages
-
-        if cache is True:
-            self.config['cache_enabled'] = True
-            self.config['cache_location'] = self._getTempDir()
-        elif isinstance(cache, basestring):
-            self.config['cache_enabled'] = True
-            self.config['cache_location'] = cache
-        else:
-            self.config['cache_enabled'] = False
-
-        if self.config['cache_enabled']:
-            self.urlopener = urllib2.build_opener(
-                CacheHandler(self.config['cache_location'])
-            )
-        else:
-            self.urlopener = urllib2.build_opener()
-
         self.config['banners_enabled'] = banners
         self.config['actors_enabled'] = actors
 
@@ -444,36 +416,9 @@ class Tvdb:
         """
         return os.path.join(tempfile.gettempdir(), "tvdb_api")
 
-    def _loadUrl(self, url, recache = False):
-        global lastTimeout
-        try:
-            log().debug("Retrieving URL %s" % url)
-            resp = self.urlopener.open(url)
-            if 'x-local-cache' in resp.headers:
-                log().debug("URL %s was cached in %s" % (
-                    url,
-                    resp.headers['x-local-cache'])
-                )
-                if recache:
-                    log().debug("Attempting to recache %s" % url)
-                    resp.recache()
-        except (IOError, urllib2.URLError), errormsg:
-            if not str(errormsg).startswith('HTTP Error'):
-                lastTimeout = datetime.datetime.now()
-            raise tvdb_error("Could not connect to server: %s" % (errormsg))
-        #end try
-        
-        # handle gzipped content,
-        # http://dbr.lighthouseapp.com/projects/13342/tickets/72-gzipped-data-patch
-        if 'gzip' in resp.headers.get("Content-Encoding", ''):
-            if gzip:
-                stream = StringIO.StringIO(resp.read())
-                gz = gzip.GzipFile(fileobj=stream)
-                return gz.read()
-            
-            raise tvdb_error("Received gzip data from thetvdb.com, but could not correctly handle it")
-        
-        return resp.read()
+    def _loadUrl(self, url):
+        result = urlfetch.fetch(url)
+        return result.content
 
     def _getetsrc(self, url):
         """Loads a URL using caching, returns an ElementTree of the source
@@ -482,18 +427,13 @@ class Tvdb:
         try:
             return ElementTree.fromstring(src)
         except SyntaxError:
-            src = self._loadUrl(url, recache=True)
+            src = self._loadUrl(url)
             try:
                 return ElementTree.fromstring(src)
             except SyntaxError, exceptionmsg:
                 errormsg = "There was an error with the XML retrieved from thetvdb.com:\n%s" % (
                     exceptionmsg
                 )
-
-                if self.config['cache_enabled']:
-                    errormsg += "\nFirst try emptying the cache folder at..\n%s" % (
-                        self.config['cache_location']
-                    )
 
                 errormsg += "\nIf this does not resolve the issue, please try again later. If the error persists, report a bug on"
                 errormsg += "\nhttp://dbr.lighthouseapp.com/projects/13342-tvdb_api/overview\n"
@@ -787,7 +727,7 @@ def main():
     import logging
     logging.basicConfig(level=logging.DEBUG)
 
-    tvdb_instance = Tvdb(interactive=True, cache=False)
+    tvdb_instance = Tvdb(interactive=True)
     print tvdb_instance['Lost']['seriesname']
     print tvdb_instance['Lost'][1][4]['episodename']
 
